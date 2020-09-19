@@ -5,6 +5,7 @@ defmodule Opencov.JobManager do
   import Opencov.Job
   alias Opencov.Job
   alias Opencov.FileManager
+  require Logger
 
   @required_fields ~w(build_id)a
   @optional_fields ~w(run_at job_number files_count)a
@@ -57,10 +58,29 @@ defmodule Opencov.JobManager do
   def create_from_json!(build, params) do
     {source_files, params} = Map.pop(params, "source_files", [])
     params = Map.put(params, "files_count", Enum.count(source_files))
+
+    if Map.has_key?(params, "run_at") && is_php_coveralls_date(params["run_at"]) do
+      Logger.debug "Got run_at date from php-coveralls, transform it."
+      # php-coveralls send run_at date in Y-m-d H:i:s O format. But we will got an 422 in that case
+      # so we should convert it to iso8601
+      #
+      # Example: 2020-09-18 10:37:30 +0000
+      params = Map.put(params, "run_at", Timex.format!(Timex.parse!(params["run_at"], "{YYYY}-{M}-{D} {h24}:{m}:{s} {Z}"), "{ISO:Extended}"))
+    end
+
+    Logger.debug inspect(params)
+
     job = Ecto.build_assoc(build, :jobs) |> changeset(params) |> Repo.insert!
     Enum.each source_files, fn file_params ->
       Ecto.build_assoc(job, :files) |> FileManager.changeset(file_params) |> Repo.insert!
     end
     job |> Repo.preload(:files) |> update_coverage
+  end
+
+  def is_php_coveralls_date(date) do
+    case Timex.parse(date, "{YYYY}-{M}-{D} {h24}:{m}:{s} {Z}") do
+      {:ok, _} -> true
+      _ -> false
+    end
   end
 end
